@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from promptlab.schemas import TaskName
+TaskName = Literal["triage", "summarization", "extraction"]
 
 
 class Record(BaseModel):
