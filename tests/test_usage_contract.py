@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import get_args
 
 import pytest
+from pytest import MonkeyPatch
 
 from promptlab.config import Settings
 from promptlab.errors import UnknownModelError
@@ -88,7 +90,7 @@ def test_unknown_model_raises() -> None:
         compute_cost("not-a-configured-model", input_tokens=10, output_tokens=10)
 
 
-def test_append_record_appends_jsonl(tmp_path, monkeypatch) -> None:
+def test_append_record_appends_jsonl(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     record = make_record()
 
