@@ -19,3 +19,7 @@ class PermanentProviderError(Exception):
 
 class TruncatedResponseError(Exception):
     """Ollama reported that the output token ceiling was reached. Not retried."""
+
+
+class StructuredOutputError(Exception):
+    """Schema parse/validation failed, or the adapter did not return usable text."""
