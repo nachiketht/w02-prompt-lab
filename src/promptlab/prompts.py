@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 from pydantic import BaseModel, ConfigDict
 
@@ -93,6 +93,13 @@ def _placeholders(template: str) -> set[str]:
     return set(_PLACEHOLDER.findall(template))
 
 
+def _escape_untrusted(untrusted: str) -> str:
+    """Prevent untrusted text from closing document or customer markers."""
+    return untrusted.replace(DOCUMENT_MARKER_CLOSE, "&lt;/document&gt;").replace(
+        CUSTOMER_MARKER_CLOSE, "&lt;/customer_message&gt;"
+    )
+
+
 def render_user(
     template: PromptTemplate,
     variables: Mapping[str, str],
@@ -108,4 +115,17 @@ def render_user(
     - untrusted text is supplied through ``document_text``
     - literal JSON braces in prompt examples must remain literal
     """
-    raise NotImplementedError
+    values = {**variables, "document_text": _escape_untrusted(untrusted)}
+    required = _placeholders(template.user_template)
+    missing = sorted(name for name in required if name not in values)
+    if missing:
+        raise MissingPromptVariableError(missing)
+
+    rendered = template.user_template
+    for name in required:
+        if name == "document_text":
+            continue
+        rendered = rendered.replace("{" + name + "}", values[name])
+    if "document_text" in required:
+        rendered = rendered.replace("{document_text}", values["document_text"])
+    return rendered
