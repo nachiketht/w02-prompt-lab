@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Task = Literal["triage", "summarization", "extraction"]
 
@@ -66,6 +67,18 @@ class GoldLabel(BaseModel):
     # Triage
     expected_queue: str | None = None
     expected_escalation: bool | None = None
+
+    # Version groups (extraction / summarization)
+    version_group: str | None = None
+    expected_current_case_id: str | None = None
+    as_of: date | None = None
+
+    @field_validator("as_of", mode="before")
+    @classmethod
+    def parse_as_of(cls, value: Any) -> Any:
+        if isinstance(value, str) and value.strip():
+            return date.fromisoformat(value)
+        return value
 
     @model_validator(mode="before")
     @classmethod

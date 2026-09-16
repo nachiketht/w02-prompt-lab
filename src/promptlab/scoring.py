@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 from promptlab.config import HUMAN_BOUNDARY_PATTERNS, PII_PATTERNS, PROJECT_ROOT
 from promptlab.corpus import GoldLabel
 from promptlab.records import ScoreRecord, TaskName
+from promptlab.rules import VersionCandidate
 from promptlab.schemas import (
     PolicyExtraction,
     SummarizationOutput,
@@ -29,6 +31,7 @@ METRIC_RECALL = "required_evidence_recall"
 METRIC_CITATION = "citation_correctness"
 METRIC_UNSUPPORTED = "unsupported_field_avoidance"
 METRIC_STATUS = "document_status_accuracy"
+METRIC_VERSION = "version_selection_accuracy"
 
 NUMBERED_HEADING = re.compile(r"^\d+\.\s+.+")
 MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+)$")
@@ -396,6 +399,63 @@ def score_output(
         output=evidence_output,
         gold=gold,
         source=source,
+        model_id=model_id,
+        prompt_id=prompt_id,
+    )
+
+
+def candidate_from_output(
+    case_id: str,
+    output: PolicyExtraction | SummarizationOutput | None,
+) -> VersionCandidate | None:
+    """Build a version candidate from extracted evidence, or None if unusable.
+
+    Missing, absent, ambiguous, or unparsable version/effective-date fields are
+    extraction failures. They are not passed to ``select_current_version``.
+    """
+    if output is None:
+        return None
+    version_field = output.version
+    date_field = output.effective_date
+    if version_field.status != "present" or date_field.status != "present":
+        return None
+    if not isinstance(version_field.value, str) or not isinstance(date_field.value, str):
+        return None
+    try:
+        effective = date.fromisoformat(date_field.value.strip())
+    except ValueError:
+        return None
+    version = version_field.value.strip()
+    if not version:
+        return None
+    return VersionCandidate(case_id=case_id, version=version, effective_date=effective)
+
+
+def score_version_selection(
+    *,
+    run_id: str,
+    task: TaskName,
+    case_id: str,
+    model_name: str,
+    prompt_version: str,
+    selected: VersionCandidate | None,
+    expected_current_case_id: str,
+    scorer_version: str = SCORER_VERSION,
+    model_id: str | None = None,
+    prompt_id: str | None = None,
+) -> ScoreRecord:
+    """Score the deterministic rule result, not a free-text model opinion."""
+    selected_id = None if selected is None else selected.case_id
+    return _record(
+        run_id=run_id,
+        task=task,
+        case_id=case_id,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        scorer_version=scorer_version,
+        metric=METRIC_VERSION,
+        numerator=int(selected_id == expected_current_case_id),
+        detail=selected_id,
         model_id=model_id,
         prompt_id=prompt_id,
     )
