@@ -29,6 +29,7 @@ class UsageRecord(Record):
     latency_ms: float
     cost_usd: Decimal
     error: str | None = None
+    prompt_id: str | None = None
 
 
 class OutputRecord(Record):
@@ -42,6 +43,10 @@ class OutputRecord(Record):
     repairs: int
     output: dict[str, Any] | None
     error: str | None = None
+    elapsed_ms: float | None = None
+    model_ms: float | None = None
+    attempts: int | None = None
+    prompt_id: str | None = None
 
 
 class ScoreRecord(Record):

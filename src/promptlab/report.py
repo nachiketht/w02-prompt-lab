@@ -8,15 +8,15 @@ LLM.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from pathlib import Path
 from statistics import median
 from typing import Any
 
 from promptlab.records import OutputRecord, ScoreRecord, UsageRecord
 
-
 _ConfigKey = tuple[str, str, str]  # task, model_name, prompt_version
+TransferKey = tuple[str, str, str]
 
 
 def _key(record: Any) -> _ConfigKey:
@@ -37,6 +37,16 @@ def _fmt_number(value: float) -> str:
     return f"{value:.1f}"
 
 
+def _latency_text(values: Sequence[float]) -> tuple[str, str, str]:
+    if not values:
+        return "—", "—", "0"
+    return (
+        f"{_fmt_number(float(median(values)))} ms",
+        f"{_fmt_number(float(max(values)))} ms",
+        str(len(values)),
+    )
+
+
 def _aggregate_scores(
     records: Sequence[ScoreRecord],
 ) -> dict[str, tuple[int, int, bool | None]]:
@@ -51,18 +61,12 @@ def _aggregate_scores(
     for metric, rows in sorted(grouped.items()):
         numerator = sum(int(row.numerator) for row in rows)
         denominator = sum(int(row.denominator) for row in rows)
-
         directions = {
             bool(value)
             for value in (getattr(row, "lower_is_better", None) for row in rows)
             if value is not None
         }
-        lower_is_better: bool | None
-        if len(directions) == 1:
-            lower_is_better = next(iter(directions))
-        else:
-            lower_is_better = None
-
+        lower_is_better = next(iter(directions)) if len(directions) == 1 else None
         result[metric] = (numerator, denominator, lower_is_better)
 
     return result
@@ -81,49 +85,59 @@ def _metric_text(records: Sequence[ScoreRecord]) -> str:
     return "<br>".join(rendered)
 
 
-def _usage_summary(
-    records: Sequence[UsageRecord],
-) -> tuple[str, str, str, str, str, str]:
-    """Return token, latency, observation, and retry summaries."""
+def _prompt_label(
+    key: _ConfigKey,
+    outputs: Sequence[OutputRecord],
+    scores: Sequence[ScoreRecord],
+    usage: Sequence[UsageRecord],
+    transfer_keys: Collection[TransferKey],
+) -> str:
+    prompt_id = next((row.prompt_id for row in outputs if row.prompt_id), None)
+    if prompt_id is None:
+        prompt_id = next((row.prompt_id for row in scores if row.prompt_id), None)
+    if prompt_id is None:
+        prompt_id = next((row.prompt_id for row in usage if row.prompt_id), None)
+    prompt_version = key[2]
+    label = f"{prompt_id}.{prompt_version}" if prompt_id else prompt_version
+    if key in transfer_keys:
+        label += " transfer"
+    return label
 
-    if not records:
-        return "—", "—", "—", "—", "0", "0"
 
-    prompt_tokens = sum(int(getattr(row, "prompt_tokens", 0) or 0) for row in records)
-    completion_tokens = sum(
-        int(getattr(row, "completion_tokens", 0) or 0) for row in records
+def _token_per_case(
+    usage: Sequence[UsageRecord], outputs: Sequence[OutputRecord]
+) -> tuple[str, str]:
+    if not usage:
+        return "—", "—"
+    case_count = len(outputs) or len({row.case_id for row in usage}) or 1
+    prompt_tokens = sum(int(row.prompt_tokens or 0) for row in usage)
+    completion_tokens = sum(int(row.completion_tokens or 0) for row in usage)
+    return (
+        _fmt_number(prompt_tokens / case_count),
+        _fmt_number(completion_tokens / case_count),
     )
 
-    latencies = [
-        float(row.latency_ms)
-        for row in records
-        if getattr(row, "latency_ms", None) is not None
-    ]
 
-    if latencies:
-        median_latency = f"{_fmt_number(float(median(latencies)))} ms"
-        max_latency = f"{_fmt_number(float(max(latencies)))} ms"
-    else:
-        median_latency = "—"
-        max_latency = "—"
-
-    # A semantic repair is a separate model request and should not also be
-    # reported as a transport retry merely because it has an attempt number.
-    retry_attempts = sum(
+def _usage_attempt_summary(
+    records: Sequence[UsageRecord],
+) -> tuple[str, str, str, str]:
+    if not records:
+        return "—", "—", "0", "0"
+    latencies = [float(row.latency_ms) for row in records]
+    median_latency, max_latency, n = _latency_text(latencies)
+    retries = sum(
         1
         for row in records
-        if int(getattr(row, "attempt", 1) or 1) > 1
-        and str(getattr(row, "kind", "")).lower() != "repair"
+        if int(row.attempt or 1) > 1 and str(row.kind).lower() != "repair"
     )
+    return median_latency, max_latency, n, str(retries)
 
-    return (
-        str(prompt_tokens),
-        str(completion_tokens),
-        median_latency,
-        max_latency,
-        str(len(latencies)),
-        str(retry_attempts),
-    )
+
+def _case_latency_summary(records: Sequence[OutputRecord]) -> tuple[str, str, str]:
+    latencies = [
+        float(row.elapsed_ms) for row in records if row.elapsed_ms is not None
+    ]
+    return _latency_text(latencies)
 
 
 def _output_summary(
@@ -134,15 +148,26 @@ def _output_summary(
 
     total = len(records)
     succeeded = sum(1 for row in records if bool(row.succeeded))
-    repairs_needed = sum(
-        1 for row in records if int(getattr(row, "repairs", 0) or 0) > 0
-    )
+    repairs_needed = sum(1 for row in records if int(row.repairs or 0) > 0)
     failures = total - succeeded
+    return f"{succeeded}/{total}", f"{repairs_needed}/{total}", str(failures)
 
+
+def _retry_stratum(records: Sequence[OutputRecord]) -> str | None:
+    if not records:
+        return None
+    retry_cases = [
+        row
+        for row in records
+        if int(row.repairs or 0) > 0 or int(row.attempts or 0) > 1
+    ]
+    if not retry_cases:
+        return None
+    median_text, max_text, n = _case_latency_summary(retry_cases)
     return (
-        f"{succeeded}/{total}",
-        f"{repairs_needed}/{total}",
-        str(failures),
+        f"Retry/repair cases: {len(retry_cases)}/{len(records)} "
+        f"(median case latency {median_text}, max {max_text}, n={n}). "
+        "These cases are not re-weighted into the headline median."
     )
 
 
@@ -164,6 +189,7 @@ def _write_report(
     outputs: Sequence[OutputRecord],
     scores: Sequence[ScoreRecord],
     report_path: Path,
+    transfer_keys: Collection[TransferKey],
 ) -> None:
     lines: list[str] = [
         "# Model Comparison",
@@ -171,7 +197,11 @@ def _write_report(
         f"Run ID: `{run_id}`",
         "",
         "Counts are reported with their denominators. "
-        "Latency uses median and maximum rather than mean.",
+        "Headline latency is median and maximum **case** end-to-end time "
+        "(`elapsed_ms`), with one observation per case. Attempt latency is "
+        "HTTP-call time and uses a separate `n`. Mean latency is not used.",
+        "",
+        "Provider/API charge is `$0.00`.",
         "",
     ]
 
@@ -179,67 +209,70 @@ def _write_report(
     tasks = sorted({task for task, _model, _prompt in keys})
 
     if not tasks:
-        lines.extend(
-            [
-                "No records were supplied for this run.",
-                "",
-            ]
-        )
+        lines.extend(["No records were supplied for this run.", ""])
 
     for task in tasks:
         lines.extend(
             [
                 f"## {task.title()}",
                 "",
-                "| Model | Prompt | Valid outputs | Metrics | Input tokens | "
-                "Output tokens | Median latency | Max latency | n | "
+                "| Model | Prompt | Valid outputs | Metrics | "
+                "Input tokens/case | Output tokens/case | "
+                "Median case latency | Max case latency | Case n | "
+                "Median attempt latency | Max attempt latency | Attempt n | "
                 "Repairs | Retries | Final failures |",
                 "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | "
-                "---: | ---: | ---: |",
+                "---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
 
         task_keys = [key for key in keys if key[0] == task]
+        strata: list[str] = []
 
         for key in task_keys:
-            _task, model_name, prompt_version = key
-
             u = [row for row in usage if _key(row) == key]
             o = [row for row in outputs if _key(row) == key]
             s = [row for row in scores if _key(row) == key]
-
-            (
-                input_tokens,
-                output_tokens,
-                median_latency,
-                max_latency,
-                n,
-                retries,
-            ) = _usage_summary(u)
-
+            input_tokens, output_tokens = _token_per_case(u, o)
+            case_median, case_max, case_n = _case_latency_summary(o)
+            attempt_median, attempt_max, attempt_n, retries = _usage_attempt_summary(u)
             valid_outputs, repairs, failures = _output_summary(o)
-            metric_text = _metric_text(s)
-
+            prompt = _prompt_label(key, o, s, u, transfer_keys)
             lines.append(
                 "| "
-                f"{model_name} | {prompt_version} | {valid_outputs} | "
-                f"{metric_text} | {input_tokens} | {output_tokens} | "
-                f"{median_latency} | {max_latency} | {n} | {repairs} | "
-                f"{retries} | {failures} |"
+                f"{key[1]} | {prompt} | {valid_outputs} | {_metric_text(s)} | "
+                f"{input_tokens} | {output_tokens} | "
+                f"{case_median} | {case_max} | {case_n} | "
+                f"{attempt_median} | {attempt_max} | {attempt_n} | "
+                f"{repairs} | {retries} | {failures} |"
             )
+            note = _retry_stratum(o)
+            if note is not None:
+                strata.append(f"- {key[1]} / {prompt}: {note}")
 
         lines.append("")
+        if strata:
+            lines.extend(["Retry stratum (not mixed into the headline median):", "", *strata, ""])
 
     lines.extend(
         [
             "## Limits",
             "",
-            "- The Week 2 comparison uses a small fixed case set; report counts rather "
-            "than treating one-case differences as precise production estimates.",
+            "- Each task uses 12 cases. Results are directional, not production-scale estimates.",
             "- A row measures the model together with the prompt version shown in that row.",
-            "- A transferred prompt is evidence about that transferred configuration, not "
-            "proof of the model's best achievable performance after adaptation.",
-            "- Local Ollama provider/API charge is `$0.00`; token usage and latency still "
+            "- Prompt-transfer rows are labeled `transfer`. They are evidence about that "
+            "transferred configuration, not proof of the model's best "
+            "performance after adaptation.",
+            "- Untested combinations in this harness include `triage.v2` × Qwen and any "
+            "prompt version that does not appear in a table row.",
+            "- Case latency `n` is 12 (one observation per case). Attempt latency `n` is "
+            "HTTP calls. Do not treat those as the same observation count.",
+            "- Retry/repair cases already have a larger case `elapsed_ms`. They are not "
+            "weighted again into the median or max.",
+            "- Local Ollama latency depends on lab hardware. No production-volume "
+            "reliability claim is being made.",
+            "- 11/12 versus 10/12 is not a universal model ranking.",
+            "- Local provider/API charge is `$0.00`; token usage and latency still "
             "represent real operational work.",
             "",
         ]
@@ -257,6 +290,7 @@ def _write_decision_scaffold(
     outputs: Sequence[OutputRecord],
     scores: Sequence[ScoreRecord],
     decision_path: Path,
+    transfer_keys: Collection[TransferKey],
 ) -> None:
     """Write an evidence scaffold, not an invented model recommendation."""
 
@@ -287,13 +321,27 @@ def _write_decision_scaffold(
     lines.extend(["", "## Evaluated configurations", ""])
 
     if keys:
-        for task, model, prompt in keys:
+        for key in keys:
+            task, model, prompt_version = key
+            prompt = _prompt_label(
+                key,
+                [row for row in outputs if _key(row) == key],
+                [row for row in scores if _key(row) == key],
+                [row for row in usage if _key(row) == key],
+                transfer_keys,
+            )
             lines.append(f"- `{task}` — {model} — `{prompt}`")
     else:
         lines.append("- No configurations supplied.")
 
     lines.extend(
         [
+            "",
+            "## Evidence",
+            "",
+            "Every evidence row must name the prompt version. Fill this section from "
+            "`reports/comparison.md` after the measured run. Do not rewrite earlier "
+            "decision constraints after seeing the results.",
             "",
             "## Task decisions",
             "",
@@ -321,6 +369,7 @@ def write_reports(
     scores: Sequence[ScoreRecord],
     report_path: Path,
     decision_path: Path,
+    transfer_keys: Collection[TransferKey] = (),
 ) -> None:
     """Generate the comparison report and decision scaffold for one run.
 
@@ -337,6 +386,7 @@ def write_reports(
         outputs=run_outputs,
         scores=run_scores,
         report_path=Path(report_path),
+        transfer_keys=transfer_keys,
     )
 
     _write_decision_scaffold(
@@ -346,4 +396,5 @@ def write_reports(
         outputs=run_outputs,
         scores=run_scores,
         decision_path=Path(decision_path),
+        transfer_keys=transfer_keys,
     )
