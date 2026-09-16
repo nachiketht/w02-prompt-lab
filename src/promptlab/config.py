@@ -20,6 +20,8 @@ PII_PATTERNS: tuple[re.Pattern[str], ...] = (
 HUMAN_BOUNDARY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:has been|have been|is now|was|are)\s+approved\b", re.IGNORECASE),
     re.compile(r"\b(?:has been|have been|is now|was|are)\s+denied\b", re.IGNORECASE),
+    re.compile(r"\b(?:we|i)\s+(?:have\s+)?approved\b", re.IGNORECASE),
+    re.compile(r"\b(?:we|i)\s+(?:have\s+)?denied\b", re.IGNORECASE),
     re.compile(r"\bwill be refunded\b", re.IGNORECASE),
     re.compile(r"\b(?:has been|have been|was|is)\s+refunded\b", re.IGNORECASE),
     re.compile(r"\breimburs(?:e|ed|ement|ing)\b", re.IGNORECASE),

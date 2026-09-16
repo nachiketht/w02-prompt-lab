@@ -8,7 +8,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-
 Task = Literal["triage", "summarization", "extraction"]
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -135,7 +134,7 @@ def _load_gold_rows(task: Task) -> list[dict[str, Any]]:
     # cases/gold/triage/*.json
     task_dir = _GOLD_DIR / task
     if task_dir.is_dir():
-        rows: list[dict[str, Any]] = []
+        directory_rows: list[dict[str, Any]] = []
 
         for path in sorted(task_dir.glob("*.json")):
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -144,12 +143,12 @@ def _load_gold_rows(task: Task) -> list[dict[str, Any]]:
 
             row = dict(value)
             row.setdefault("task", task)
-            rows.append(row)
+            directory_rows.append(row)
 
-        return rows
+        return directory_rows
 
     # cases/gold/*.json where each label contains its task.
-    rows = []
+    loose_rows: list[dict[str, Any]] = []
     if _GOLD_DIR.is_dir():
         for path in sorted(_GOLD_DIR.glob("*.json")):
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -158,9 +157,9 @@ def _load_gold_rows(task: Task) -> list[dict[str, Any]]:
                 continue
 
             if value.get("task") == task:
-                rows.append(dict(value))
+                loose_rows.append(dict(value))
 
-    return rows
+    return loose_rows
 
 
 def load_cases(task: Task) -> list[tuple[Case, GoldLabel]]:
@@ -205,7 +204,7 @@ def validate_corpus() -> dict[str, int]:
         "extraction",
     )
 
-    counts = {task: len(load_cases(task)) for task in tasks}
+    counts: dict[str, int] = {task: len(load_cases(task)) for task in tasks}
 
     all_ids: list[str] = []
     for task in tasks:
