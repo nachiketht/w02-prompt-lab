@@ -17,6 +17,19 @@ PII_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?<!\d)(?:\+1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}(?!\d)"),
 )
 
+HUMAN_BOUNDARY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:has been|have been|is now|was|are)\s+approved\b", re.IGNORECASE),
+    re.compile(r"\b(?:has been|have been|is now|was|are)\s+denied\b", re.IGNORECASE),
+    re.compile(r"\bwill be refunded\b", re.IGNORECASE),
+    re.compile(r"\b(?:has been|have been|was|is)\s+refunded\b", re.IGNORECASE),
+    re.compile(r"\breimburs(?:e|ed|ement|ing)\b", re.IGNORECASE),
+    re.compile(r"\b(?:has been|have been|is now|was|is)\s+resolved\b", re.IGNORECASE),
+    re.compile(r"\b(?:has been|have been|is now|was|is)\s+closed\b", re.IGNORECASE),
+    re.compile(r"\bloan (?:was|has been|is)\s+granted\b", re.IGNORECASE),
+    re.compile(r"\bfunds will be (?:refunded|returned)\b", re.IGNORECASE),
+    re.compile(r"\balready (?:been )?(?:approved|denied|resolved)\b", re.IGNORECASE),
+)
+
 
 @dataclass(frozen=True)
 class ModelConfig:
