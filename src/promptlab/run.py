@@ -501,7 +501,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     print(f"wrote scores to {score_path}")
     print("wrote records to docs/day5-run.jsonl")
-    print("wrote reports/comparison.md and docs/model-decision.md")
+    print("wrote reports/comparison.md, reports/in-depth-analysis.md, and docs/model-decision.md")
     print("provider/API cost: $0.00")
 
 

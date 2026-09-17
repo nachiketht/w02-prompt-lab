@@ -68,13 +68,16 @@ def test_report_is_generated_from_records(tmp_path: object) -> None:
         decision_path=decision,
     )
     text = report.read_text(encoding="utf-8")
+    indepth = (root / "in-depth-analysis.md").read_text(encoding="utf-8")
     assert "1/1" in text
     assert "triage.v1" in text
-    assert "Median case latency" in text
+    assert "| Input tokens |" in text
+    assert "Median latency" in text
     assert "125 ms" in text
-    assert "Case n" in text
-    assert "Attempt n" in text
-    assert "12 cases" in text
+    assert "Median case latency" in indepth
+    assert "Case n" in indepth
+    assert "Attempt n" in indepth
+    assert "12-case" in text
     assert "mistral" in decision.read_text(encoding="utf-8")
 
 
@@ -160,10 +163,12 @@ def test_report_labels_transfer_and_keeps_retry_stratum_separate(tmp_path: objec
         transfer_keys={("extraction", "qwen", "v2")},
     )
     text = report.read_text(encoding="utf-8")
+    indepth = (root / "in-depth-analysis.md").read_text(encoding="utf-8")
     assert "extract.v2 transfer" in text
-    assert "Retry/repair/truncation cases: 1/1" in text
-    assert "not re-weighted" in text
-    assert "400 ms" in text
+    assert "extract.v2 transfer" in indepth
+    assert "Retry/repair/truncation cases: 1/1" in indepth
+    assert "not re-weighted" in indepth
+    assert "400 ms" in indepth
 
 
 def test_report_appends_quality_sidecar(tmp_path: object) -> None:

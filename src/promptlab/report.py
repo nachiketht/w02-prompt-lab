@@ -118,6 +118,33 @@ def _token_per_case(
     )
 
 
+def _usage_summary(
+    records: Sequence[UsageRecord],
+) -> tuple[str, str, str, str, str, str]:
+    """Instructor table: token totals, attempt latency, observation n, retries."""
+
+    if not records:
+        return "—", "—", "—", "—", "0", "0"
+
+    prompt_tokens = sum(int(row.prompt_tokens or 0) for row in records)
+    completion_tokens = sum(int(row.completion_tokens or 0) for row in records)
+    latencies = [float(row.latency_ms) for row in records]
+    median_latency, max_latency, n = _latency_text(latencies)
+    retry_attempts = sum(
+        1
+        for row in records
+        if int(row.attempt or 1) > 1 and str(row.kind).lower() != "repair"
+    )
+    return (
+        str(prompt_tokens),
+        str(completion_tokens),
+        median_latency,
+        max_latency,
+        n,
+        str(retry_attempts),
+    )
+
+
 def _usage_attempt_summary(
     records: Sequence[UsageRecord],
 ) -> tuple[str, str, str, str]:
@@ -210,6 +237,108 @@ def _write_report(
     lines.extend(
         [
             "Counts are reported with their denominators. "
+            "Latency uses median and maximum rather than mean.",
+            "",
+            "Case vs attempt latency, per-case token rates, and retry stratum "
+            "are in [`reports/in-depth-analysis.md`](in-depth-analysis.md).",
+            "",
+        ]
+    )
+
+    keys = _all_config_keys(usage, outputs, scores)
+    tasks = sorted({task for task, _model, _prompt in keys})
+
+    if not tasks:
+        lines.extend(["No records were supplied for this run.", ""])
+
+    for task in tasks:
+        lines.extend(
+            [
+                f"## {task.title()}",
+                "",
+                "| Model | Prompt | Valid outputs | Metrics | Input tokens | "
+                "Output tokens | Median latency | Max latency | n | "
+                "Repairs | Retries | Final failures |",
+                "| --- | --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | "
+                "---: | ---: | ---: |",
+            ]
+        )
+
+        task_keys = [key for key in keys if key[0] == task]
+        for key in task_keys:
+            u = [row for row in usage if _key(row) == key]
+            o = [row for row in outputs if _key(row) == key]
+            s = [row for row in scores if _key(row) == key]
+            (
+                input_tokens,
+                output_tokens,
+                median_latency,
+                max_latency,
+                n,
+                retries,
+            ) = _usage_summary(u)
+            valid_outputs, repairs, failures = _output_summary(o)
+            prompt = _prompt_label(key, o, s, u, transfer_keys)
+            lines.append(
+                "| "
+                f"{key[1]} | {prompt} | {valid_outputs} | {_metric_text(s)} | "
+                f"{input_tokens} | {output_tokens} | "
+                f"{median_latency} | {max_latency} | {n} | "
+                f"{repairs} | {retries} | {failures} |"
+            )
+
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Limits",
+            "",
+            "- The Week 2 comparison uses a 12-case sample per task; report counts "
+            "rather than treating one-case differences as precise production estimates.",
+            "- A row measures the model together with the prompt version shown in that row.",
+            "- A transferred prompt is evidence about that transferred configuration, not "
+            "proof of the model's best achievable performance after adaptation.",
+            "- Local Ollama provider/API charge is `$0.00`; token usage and latency still "
+            "represent real operational work.",
+            "",
+        ]
+    )
+
+    quality_path = report_path.with_name("comparison-quality.md")
+    if quality_path.exists():
+        quality_text = quality_path.read_text(encoding="utf-8").strip()
+        if quality_text:
+            lines.extend([quality_text, ""])
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _write_indepth_report(
+    *,
+    run_id: str,
+    usage: Sequence[UsageRecord],
+    outputs: Sequence[OutputRecord],
+    scores: Sequence[ScoreRecord],
+    report_path: Path,
+    transfer_keys: Collection[TransferKey],
+    config_notes: Sequence[str] = (),
+) -> None:
+    lines: list[str] = [
+        "# In-depth Analysis",
+        "",
+        f"Run ID: `{run_id}`",
+        "",
+        "This file keeps the case vs attempt split that does not fit the "
+        "instructor comparison table in `reports/comparison.md`.",
+        "",
+    ]
+    if config_notes:
+        lines.extend(config_notes)
+        lines.append("")
+    lines.extend(
+        [
+            "Counts are reported with their denominators. "
             "Headline latency is median and maximum **case** end-to-end time "
             "(`elapsed_ms`), with one observation per case. Attempt latency is "
             "HTTP-call time and uses a separate `n`. Mean latency is not used.",
@@ -292,12 +421,6 @@ def _write_report(
             "",
         ]
     )
-
-    quality_path = report_path.with_name("comparison-quality.md")
-    if quality_path.exists():
-        quality_text = quality_path.read_text(encoding="utf-8").strip()
-        if quality_text:
-            lines.extend([quality_text, ""])
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
@@ -414,12 +537,22 @@ def write_reports(
     run_outputs = _for_run(outputs, run_id)
     run_scores = _for_run(scores, run_id)
 
+    report = Path(report_path)
     _write_report(
         run_id=run_id,
         usage=run_usage,
         outputs=run_outputs,
         scores=run_scores,
-        report_path=Path(report_path),
+        report_path=report,
+        transfer_keys=transfer_keys,
+        config_notes=config_notes,
+    )
+    _write_indepth_report(
+        run_id=run_id,
+        usage=run_usage,
+        outputs=run_outputs,
+        scores=run_scores,
+        report_path=report.with_name("in-depth-analysis.md"),
         transfer_keys=transfer_keys,
         config_notes=config_notes,
     )
