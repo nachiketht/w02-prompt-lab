@@ -129,3 +129,21 @@ def render_user(
     if "document_text" in required:
         rendered = rendered.replace("{document_text}", values["document_text"])
     return rendered
+
+
+def render_system(template: PromptTemplate, variables: Mapping[str, str]) -> str:
+    """Fill placeholders in the system layer, including schema_description.
+
+    Only names present in the original system text are substituted, so JSON
+    braces inside the schema description stay literal.
+    """
+    if not template.system.strip():
+        return ""
+    required = _placeholders(template.system)
+    missing = sorted(name for name in required if name not in variables)
+    if missing:
+        raise MissingPromptVariableError(missing)
+    rendered = template.system
+    for name in required:
+        rendered = rendered.replace("{" + name + "}", variables[name])
+    return rendered
