@@ -256,3 +256,51 @@ def test_truncation_is_recorded_and_not_retried(
     assert record.attempt == 1
     assert record.stop_reason == "length"
     assert record.error_type == TruncatedResponseError.__name__
+
+
+def test_mistral_generate_body_omits_think(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MODEL_A_THINK", raising=False)
+    captured: list[dict[str, object]] = []
+
+    def fake_post(*args: object, **kwargs: object) -> FakeResponse:
+        payload = kwargs["json"]
+        assert isinstance(payload, dict)
+        captured.append(payload)
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    adapter = OllamaAdapter(model_id=_model_id("mistral"))
+    result = adapter.complete(_request(), "mistral-think-run")
+
+    assert result.succeeded is True
+    assert len(captured) == 1
+    assert "think" not in captured[0]
+
+
+def test_qwen_generate_body_sends_think_false(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODEL_B_THINK", "false")
+    captured: list[dict[str, object]] = []
+
+    def fake_post(*args: object, **kwargs: object) -> FakeResponse:
+        payload = kwargs["json"]
+        assert isinstance(payload, dict)
+        captured.append(payload)
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    adapter = OllamaAdapter(model_id=_model_id("qwen"))
+    result = adapter.complete(_request(), "qwen-think-off-run")
+
+    assert result.succeeded is True
+    assert len(captured) == 1
+    assert captured[0]["think"] is False

@@ -60,6 +60,43 @@ def test_complete_structured_repairs_once() -> None:
     assert adapter.calls == 2
 
 
+class TruncatingThenRepairAdapter:
+    provider = "ollama"
+    model_id = "fixture-model"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, request: CompletionRequest, run_id: str) -> CompletionResult:
+        self.calls += 1
+        if self.calls == 1:
+            return CompletionResult(
+                succeeded=False,
+                text='{"value":',
+                error_type="TruncatedResponseError",
+                records=[],
+            )
+        return CompletionResult(
+            succeeded=True,
+            text='{"value":"fixed"}',
+            error_type=None,
+            records=[],
+        )
+
+
+def test_complete_structured_repairs_truncated_output() -> None:
+    adapter = TruncatingThenRepairAdapter()
+    result = complete_structured(
+        adapter,
+        _request(),
+        TinySchema,
+        "fixture-run",
+        max_repairs=1,
+    )
+    assert result == TinySchema(value="fixed")
+    assert adapter.calls == 2
+
+
 def test_repair_request_carries_validation_context() -> None:
     adapter = RepairingStubAdapter()
 

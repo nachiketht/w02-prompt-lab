@@ -20,6 +20,8 @@ PII_PATTERNS: tuple[re.Pattern[str], ...] = (
 HUMAN_BOUNDARY_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:has been|have been|is now|was|are)\s+approved\b", re.IGNORECASE),
     re.compile(r"\b(?:has been|have been|is now|was|are)\s+denied\b", re.IGNORECASE),
+    re.compile(r"\b(?:we|i)\s+(?:have\s+)?approved\b", re.IGNORECASE),
+    re.compile(r"\b(?:we|i)\s+(?:have\s+)?denied\b", re.IGNORECASE),
     re.compile(r"\bwill be refunded\b", re.IGNORECASE),
     re.compile(r"\b(?:has been|have been|was|is)\s+refunded\b", re.IGNORECASE),
     re.compile(r"\breimburs(?:e|ed|ement|ing)\b", re.IGNORECASE),
@@ -37,6 +39,7 @@ class ModelConfig:
     model_id: str
     input_usd_per_million: Decimal = Decimal("0")
     output_usd_per_million: Decimal = Decimal("0")
+    think: bool | None = None
 
     def cost(self, prompt_tokens: int, completion_tokens: int) -> Decimal:
         million = Decimal(1_000_000)
@@ -44,6 +47,17 @@ class ModelConfig:
             Decimal(prompt_tokens) * self.input_usd_per_million / million
             + Decimal(completion_tokens) * self.output_usd_per_million / million
         )
+
+
+def _parse_optional_bool(raw: str | None) -> bool | None:
+    if raw is None or raw.strip() == "":
+        return None
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid boolean {raw!r}")
 
 
 @dataclass(frozen=True)
@@ -66,8 +80,16 @@ class Settings:
                 "OLLAMA_BASE_URL", "http://host.docker.internal:11434"
             ).rstrip("/"),
             models={
-                "mistral": ModelConfig(logical_name="mistral", model_id=model_a),
-                "qwen": ModelConfig(logical_name="qwen", model_id=model_b),
+                "mistral": ModelConfig(
+                    logical_name="mistral",
+                    model_id=model_a,
+                    think=_parse_optional_bool(os.getenv("MODEL_A_THINK")),
+                ),
+                "qwen": ModelConfig(
+                    logical_name="qwen",
+                    model_id=model_b,
+                    think=_parse_optional_bool(os.getenv("MODEL_B_THINK", "false")),
+                ),
             },
             temperature=float(os.getenv("TEMPERATURE", "0.0")),
             max_retries=int(os.getenv("MAX_RETRIES", "2")),

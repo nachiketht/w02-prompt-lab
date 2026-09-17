@@ -63,6 +63,18 @@ def test_render_user_escapes_customer_closing_marker() -> None:
     assert "&lt;/customer_message&gt;" in rendered
 
 
+def test_render_system_fills_schema_description() -> None:
+    template = PromptTemplate(
+        prompt_id="extract",
+        version="v3",
+        system="Schema:\n{schema_description}\nReturn JSON only.",
+        user_template="<document>{document_text}</document>",
+        template_hash="test-hash",
+    )
+    rendered = prompts.render_system(template, {"schema_description": "PolicyExtraction"})
+    assert rendered == "Schema:\nPolicyExtraction\nReturn JSON only."
+
+
 def test_render_user_does_not_break_on_literal_json_braces() -> None:
     template = _template(
         'Return JSON like {"queue": "card_dispute"}.\n'

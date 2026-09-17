@@ -32,12 +32,21 @@ def validate_structured_text[T: BaseModel](text: str, schema: type[T]) -> T:
 def _parse_result[T: BaseModel](
     result: CompletionResult, schema: type[T]
 ) -> tuple[T | None, str | None, bool]:
-    if not result.succeeded or result.text is None:
-        return None, result.error_type or "adapter failed", True
-    try:
-        return validate_structured_text(result.text, schema), None, False
-    except (json.JSONDecodeError, ValidationError) as exc:
-        return None, str(exc), False
+    """Parse adapter text when present.
+
+    Truncated output is repairable when any text was returned. A hard transport
+    failure is only reported when there is no text to repair from.
+    """
+    if result.text:
+        try:
+            return validate_structured_text(result.text, schema), None, False
+        except (json.JSONDecodeError, ValidationError) as exc:
+            if result.error_type == "TruncatedResponseError":
+                return None, f"TruncatedResponseError: {exc}", False
+            if not result.succeeded:
+                return None, result.error_type or str(exc), True
+            return None, str(exc), False
+    return None, result.error_type or "adapter failed", True
 
 
 def _repair_user_content(original: str, error: str, failed_text: str) -> str:

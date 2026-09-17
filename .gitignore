@@ -7,3 +7,6 @@ __pycache__/
 *.py[cod]
 runs/
 
+# Intermediate local snapshots. Keep reports/comparison.md as the Day 5 deliverable.
+reports/comparison-run*.md
+
