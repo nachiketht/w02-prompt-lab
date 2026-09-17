@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
-import shutil
 import time
 from collections import defaultdict
 from collections.abc import Sequence
@@ -20,7 +20,7 @@ from promptlab.adapters.ollama import OllamaAdapter
 from promptlab.config import PROJECT_ROOT, ModelConfig, Settings
 from promptlab.corpus import Case, GoldLabel, load_cases, validate_corpus
 from promptlab.errors import StructuredOutputError
-from promptlab.prompts import load, render_user
+from promptlab.prompts import load, render_system, render_user
 from promptlab.records import OutputRecord, ScoreRecord, TaskName, UsageRecord, append_record
 from promptlab.report import TransferKey, write_reports
 from promptlab.rules import select_current_version
@@ -76,8 +76,39 @@ class RecordingAdapter:
         return result
 
 
+def spec_for(task: TaskName, model_name: str) -> TaskSpec:
+    """Return the prompt spec for one task/model pair.
+
+    Extraction on Qwen uses the adapted extract.v3 prompt. Other Day 5 tasks
+    keep the Mistral-developed versions and are labeled as transfer on Qwen.
+    """
+    if task == "extraction" and model_name == "qwen":
+        return TaskSpec(
+            "extraction",
+            "extract",
+            "v3",
+            PolicyExtraction,
+            developed_on="qwen",
+        )
+    return TASK_SPECS[task]
+
+
 def is_transfer(model_name: str, spec: TaskSpec) -> bool:
     return model_name != spec.developed_on
+
+
+def config_notes(models: Sequence[ModelConfig]) -> list[str]:
+    lines = ["Measured model config:"]
+    for model in models:
+        lines.append(
+            f"- `{model.logical_name}` (`{model.model_id}`): think={model.think!r}"
+        )
+    lines.append("")
+    lines.append(
+        "Qwen `think=False` is a new Day 5 configuration. "
+        "Day 2 measured Qwen with thinking left on."
+    )
+    return lines
 
 
 def parse_args(
@@ -123,8 +154,10 @@ def _kind(call_index: int, attempt_index: int) -> Literal[
 
 
 def _status(record: CallRecord, group_validated: bool) -> Literal[
-    "success", "schema_invalid", "transport_error"
+    "success", "schema_invalid", "transport_error", "truncated"
 ]:
+    if record.error_type == "TruncatedResponseError":
+        return "truncated"
     if record.error_type is not None:
         return "transport_error"
     if group_validated:
@@ -182,14 +215,18 @@ def _render_request(
 ) -> CompletionRequest:
     template = load(spec.prompt_id, spec.prompt_version)
     variables: dict[str, str] = {"case_id": case.id}
-    if "{schema_description}" in template.user_template:
+    if (
+        "{schema_description}" in template.user_template
+        or "{schema_description}" in template.system
+    ):
         variables["schema_description"] = schema_description(spec.schema)
+    system = render_system(template, variables) or DEFAULT_SYSTEM
     return CompletionRequest(
         task=spec.task,
         case_id=case.id,
         prompt_id=spec.prompt_id,
         prompt_version=spec.prompt_version,
-        system=template.system.strip() or DEFAULT_SYSTEM,
+        system=system,
         user_content=render_user(template, variables, case.document_text),
         temperature=temperature,
         max_output_tokens=MAX_OUTPUT_TOKENS,
@@ -234,6 +271,10 @@ def evaluate_case(
         calls=adapter.calls,
         validated=validated,
     )
+    retries = sum(1 for row in usage if row.kind in {"transport_retry", "repair_retry"})
+    truncations = sum(
+        1 for record in call_records if record.error_type == "TruncatedResponseError"
+    )
     output = OutputRecord(
         run_id=run_id,
         task=spec.task,
@@ -249,6 +290,9 @@ def evaluate_case(
         model_ms=model_ms,
         attempts=len(call_records),
         prompt_id=spec.prompt_id,
+        retries=retries,
+        truncations=truncations,
+        call_latencies_ms=[float(record.latency_ms) for record in call_records],
     )
     scores = score_output(
         run_id=run_id,
@@ -316,13 +360,48 @@ def _write_jsonl(
         append_record(path, record)
 
 
-def _copy_call_records(run_id: str, destination: Path) -> None:
+def _write_run_records(
+    run_id: str, usage: Sequence[UsageRecord], destination: Path
+) -> None:
+    """Copy CallRecords into docs and attach kind plus per-call latency.
+
+    CallRecord keeps the Day 1 field set. The Day 5 evidence file adds ``kind``
+    so retries, repairs, and truncations are visible without guessing.
+    """
     source = PROJECT_ROOT / "runs" / f"{run_id}.jsonl"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if source.exists():
-        shutil.copyfile(source, destination)
-    else:
+    if destination.exists():
+        destination.unlink()
+    if not source.exists():
         destination.write_text("", encoding="utf-8")
+        return
+    calls = [
+        CallRecord.model_validate_json(line)
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    with destination.open("w", encoding="utf-8") as handle:
+        for index, record in enumerate(calls):
+            payload = json.loads(record.model_dump_json())
+            if index < len(usage):
+                payload["kind"] = usage[index].kind
+            handle.write(json.dumps(payload) + "\n")
+
+
+def _print_case(case_id: str, output: OutputRecord, usage: Sequence[UsageRecord]) -> None:
+    elapsed = 0.0 if output.elapsed_ms is None else output.elapsed_ms
+    print(
+        f"  {case_id}: succeeded={output.succeeded} "
+        f"repairs={output.repairs} retries={output.retries} "
+        f"truncated={output.truncations} elapsed_ms={elapsed:.0f} "
+        f"call_latency_ms={output.call_latencies_ms}"
+    )
+    for row in usage:
+        print(
+            f"    {row.kind} attempt={row.attempt} "
+            f"latency_ms={row.latency_ms:.0f} status={row.status} "
+            f"error={row.error}"
+        )
 
 
 def run_evaluation(
@@ -340,7 +419,7 @@ def run_evaluation(
     for model in models:
         adapter = RecordingAdapter(OllamaAdapter(model_id=model.model_id))
         for task_name in tasks:
-            spec = TASK_SPECS[task_name]
+            spec = spec_for(task_name, model.logical_name)
             if is_transfer(model.logical_name, spec):
                 transfer_keys.add((spec.task, model.logical_name, spec.prompt_version))
             pairs = load_cases(spec.task)
@@ -348,6 +427,7 @@ def run_evaluation(
             print(
                 f"{spec.task} {spec.prompt_id}.{spec.prompt_version} "
                 f"model={model.logical_name} model_id={adapter.model_id} "
+                f"think={model.think!r} "
                 f"transfer={is_transfer(model.logical_name, spec)}"
             )
             for case, gold in pairs:
@@ -365,10 +445,7 @@ def run_evaluation(
                 all_outputs.append(output)
                 all_scores.extend(scores)
                 group_rows.append((case, gold, parsed))
-                print(
-                    f"  {case.id}: succeeded={output.succeeded} "
-                    f"repairs={output.repairs} elapsed_ms={output.elapsed_ms:.0f}"
-                )
+                _print_case(case.id, output, usage)
             all_scores.extend(
                 score_version_groups(
                     run_id=run_id,
@@ -409,7 +486,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     _write_jsonl(score_path, scores)
     _write_jsonl(PROJECT_ROOT / "runs" / f"{run_id}-usage.jsonl", usage)
     _write_jsonl(PROJECT_ROOT / "runs" / f"{run_id}-outputs.jsonl", outputs)
-    _copy_call_records(run_id, PROJECT_ROOT / "docs" / "day5-run.jsonl")
+    _write_run_records(run_id, usage, PROJECT_ROOT / "docs" / "day5-run.jsonl")
 
     write_reports(
         run_id=run_id,
@@ -420,6 +497,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         report_path=PROJECT_ROOT / "reports" / "comparison.md",
         decision_path=PROJECT_ROOT / "docs" / "model-decision.md",
         transfer_keys=transfer_keys,
+        config_notes=config_notes(selected_models),
     )
     print(f"wrote scores to {score_path}")
     print("wrote records to docs/day5-run.jsonl")

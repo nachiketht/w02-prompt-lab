@@ -49,11 +49,31 @@ def _response_text(payload: dict[str, Any]) -> str | None:
 class OllamaAdapter:
     def __init__(self, model_id: str) -> None:
         settings = Settings.from_env()
-        if model_id not in {config.model_id for config in settings.models.values()}:
+        config = next(
+            (item for item in settings.models.values() if item.model_id == model_id),
+            None,
+        )
+        if config is None:
             raise UnknownModelError(model_id)
         self.provider = "ollama"
         self.model_id = model_id
         self._base_url = settings.ollama_base_url
+        self._think = config.think
+
+    def _generate_body(self, request: CompletionRequest) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": self.model_id,
+            "system": request.system,
+            "prompt": request.user_content,
+            "stream": False,
+            "options": {
+                "temperature": request.temperature,
+                "num_predict": request.max_output_tokens,
+            },
+        }
+        if self._think is not None:
+            body["think"] = self._think
+        return body
 
     def complete(self, request: CompletionRequest, run_id: str) -> CompletionResult:
         records: list[CallRecord] = []
@@ -98,16 +118,7 @@ class OllamaAdapter:
         try:
             response = httpx.post(
                 f"{self._base_url}/api/generate",
-                json={
-                    "model": self.model_id,
-                    "system": request.system,
-                    "prompt": request.user_content,
-                    "stream": False,
-                    "options": {
-                        "temperature": request.temperature,
-                        "num_predict": request.max_output_tokens,
-                    },
-                },
+                json=self._generate_body(request),
                 timeout=REQUEST_TIMEOUT_SECONDS,
             )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:

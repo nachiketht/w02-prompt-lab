@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 TaskName = Literal["triage", "summarization", "extraction"]
 
@@ -23,7 +23,7 @@ class UsageRecord(Record):
     prompt_version: str
     attempt: int
     kind: Literal["primary", "transport_retry", "repair", "repair_retry"]
-    status: Literal["success", "schema_invalid", "transport_error"]
+    status: Literal["success", "schema_invalid", "transport_error", "truncated"]
     prompt_tokens: int
     completion_tokens: int
     latency_ms: float
@@ -47,6 +47,9 @@ class OutputRecord(Record):
     model_ms: float | None = None
     attempts: int | None = None
     prompt_id: str | None = None
+    retries: int = 0
+    truncations: int = 0
+    call_latencies_ms: list[float] = Field(default_factory=list)
 
 
 class ScoreRecord(Record):

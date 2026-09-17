@@ -6,10 +6,12 @@ from promptlab.corpus import Case, GoldLabel
 from promptlab.run import (
     TASK_SPECS,
     RecordingAdapter,
+    _render_request,
     evaluate_case,
     is_transfer,
     parse_args,
     score_version_groups,
+    spec_for,
     usage_from_calls,
 )
 from promptlab.schemas import EvidenceField, PolicyExtraction
@@ -71,10 +73,19 @@ def test_parse_args_defaults_to_all_filters() -> None:
     assert args.models is None
 
 
-def test_qwen_rows_are_prompt_transfer() -> None:
-    spec = TASK_SPECS["triage"]
-    assert is_transfer("qwen", spec) is True
-    assert is_transfer("mistral", spec) is False
+def test_qwen_extraction_uses_adapted_v3() -> None:
+    spec = spec_for("extraction", "qwen")
+    assert spec.prompt_id == "extract"
+    assert spec.prompt_version == "v3"
+    assert is_transfer("qwen", spec) is False
+    assert is_transfer("mistral", spec_for("extraction", "mistral")) is False
+    assert spec_for("extraction", "mistral").prompt_version == "v2"
+
+
+def test_qwen_rows_are_prompt_transfer_except_adapted_extraction() -> None:
+    assert is_transfer("qwen", TASK_SPECS["triage"]) is True
+    assert is_transfer("mistral", TASK_SPECS["triage"]) is False
+    assert is_transfer("qwen", TASK_SPECS["summarization"]) is True
 
 
 def test_usage_maps_transport_retries_and_repairs() -> None:
@@ -131,6 +142,9 @@ def test_evaluate_case_records_end_to_end_latency() -> None:
     assert output.model_ms == 100
     assert output.attempts == 1
     assert output.repairs == 0
+    assert output.retries == 0
+    assert output.truncations == 0
+    assert output.call_latencies_ms == [100]
     assert usage[0].kind == "primary"
     assert any(score.metric == "queue_accuracy" and score.numerator == 1 for score in scores)
 
@@ -187,6 +201,15 @@ def test_version_groups_score_the_python_rule() -> None:
     assert scores[0].metric == "version_selection_accuracy"
     assert scores[0].numerator == 1
     assert scores[0].case_id == "E02"
+
+
+def test_extract_v3_fills_schema_on_the_system_layer() -> None:
+    spec = spec_for("extraction", "qwen")
+    case = Case(id="E01", task="extraction", document_text="1. Document Control\nPolicy")
+    request = _render_request(spec=spec, case=case, temperature=0.0)
+    assert "{schema_description}" not in request.system
+    assert "PolicyExtraction" in request.system
+    assert "{schema_description}" not in request.user_content
 
 
 def test_run_module_has_no_model_id_literals() -> None:

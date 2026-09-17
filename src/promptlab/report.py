@@ -159,14 +159,20 @@ def _retry_stratum(records: Sequence[OutputRecord]) -> str | None:
     retry_cases = [
         row
         for row in records
-        if int(row.repairs or 0) > 0 or int(row.attempts or 0) > 1
+        if int(row.repairs or 0) > 0
+        or int(row.retries or 0) > 0
+        or int(row.truncations or 0) > 0
+        or int(row.attempts or 0) > 1
     ]
     if not retry_cases:
         return None
     median_text, max_text, n = _case_latency_summary(retry_cases)
+    truncations = sum(int(row.truncations or 0) for row in retry_cases)
+    retry_total = sum(int(row.retries or 0) for row in retry_cases)
     return (
-        f"Retry/repair cases: {len(retry_cases)}/{len(records)} "
-        f"(median case latency {median_text}, max {max_text}, n={n}). "
+        f"Retry/repair/truncation cases: {len(retry_cases)}/{len(records)} "
+        f"(retries {retry_total}, truncations {truncations}, "
+        f"median case latency {median_text}, max {max_text}, n={n}). "
         "These cases are not re-weighted into the headline median."
     )
 
@@ -190,20 +196,28 @@ def _write_report(
     scores: Sequence[ScoreRecord],
     report_path: Path,
     transfer_keys: Collection[TransferKey],
+    config_notes: Sequence[str] = (),
 ) -> None:
     lines: list[str] = [
         "# Model Comparison",
         "",
         f"Run ID: `{run_id}`",
         "",
-        "Counts are reported with their denominators. "
-        "Headline latency is median and maximum **case** end-to-end time "
-        "(`elapsed_ms`), with one observation per case. Attempt latency is "
-        "HTTP-call time and uses a separate `n`. Mean latency is not used.",
-        "",
-        "Provider/API charge is `$0.00`.",
-        "",
     ]
+    if config_notes:
+        lines.extend(config_notes)
+        lines.append("")
+    lines.extend(
+        [
+            "Counts are reported with their denominators. "
+            "Headline latency is median and maximum **case** end-to-end time "
+            "(`elapsed_ms`), with one observation per case. Attempt latency is "
+            "HTTP-call time and uses a separate `n`. Mean latency is not used.",
+            "",
+            "Provider/API charge is `$0.00`.",
+            "",
+        ]
+    )
 
     keys = _all_config_keys(usage, outputs, scores)
     tasks = sorted({task for task, _model, _prompt in keys})
@@ -235,8 +249,9 @@ def _write_report(
             s = [row for row in scores if _key(row) == key]
             input_tokens, output_tokens = _token_per_case(u, o)
             case_median, case_max, case_n = _case_latency_summary(o)
-            attempt_median, attempt_max, attempt_n, retries = _usage_attempt_summary(u)
+            attempt_median, attempt_max, attempt_n, _ = _usage_attempt_summary(u)
             valid_outputs, repairs, failures = _output_summary(o)
+            retries = str(sum(int(row.retries or 0) for row in o))
             prompt = _prompt_label(key, o, s, u, transfer_keys)
             lines.append(
                 "| "
@@ -278,8 +293,23 @@ def _write_report(
         ]
     )
 
+    quality_path = report_path.with_name("comparison-quality.md")
+    if quality_path.exists():
+        quality_text = quality_path.read_text(encoding="utf-8").strip()
+        if quality_text:
+            lines.extend([quality_text, ""])
+
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _decision_is_filled(path: Path) -> bool:
+    """Keep a filled recommendation when the harness regenerates tables."""
+
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8")
+    return "selected model:" in text.lower() and "For each task, complete:" not in text
 
 
 def _write_decision_scaffold(
@@ -293,6 +323,9 @@ def _write_decision_scaffold(
     transfer_keys: Collection[TransferKey],
 ) -> None:
     """Write an evidence scaffold, not an invented model recommendation."""
+
+    if _decision_is_filled(decision_path):
+        return
 
     keys = _all_config_keys(usage, outputs, scores)
 
@@ -370,6 +403,7 @@ def write_reports(
     report_path: Path,
     decision_path: Path,
     transfer_keys: Collection[TransferKey] = (),
+    config_notes: Sequence[str] = (),
 ) -> None:
     """Generate the comparison report and decision scaffold for one run.
 
@@ -387,6 +421,7 @@ def write_reports(
         scores=run_scores,
         report_path=Path(report_path),
         transfer_keys=transfer_keys,
+        config_notes=config_notes,
     )
 
     _write_decision_scaffold(

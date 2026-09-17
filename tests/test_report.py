@@ -129,6 +129,9 @@ def test_report_labels_transfer_and_keeps_retry_stratum_separate(tmp_path: objec
             model_ms=380.0,
             attempts=2,
             prompt_id="extract",
+            retries=0,
+            truncations=0,
+            call_latencies_ms=[200.0, 180.0],
         )
     ]
     scores = [
@@ -158,6 +161,47 @@ def test_report_labels_transfer_and_keeps_retry_stratum_separate(tmp_path: objec
     )
     text = report.read_text(encoding="utf-8")
     assert "extract.v2 transfer" in text
-    assert "Retry/repair cases: 1/1" in text
+    assert "Retry/repair/truncation cases: 1/1" in text
     assert "not re-weighted" in text
     assert "400 ms" in text
+
+
+def test_report_appends_quality_sidecar(tmp_path: object) -> None:
+    root = Path(str(tmp_path))
+    (root / "comparison-quality.md").write_text(
+        "## Quality\n\nDirectional reading only.\n",
+        encoding="utf-8",
+    )
+    write_reports(
+        run_id="demo",
+        models=["mistral"],
+        usage=[],
+        outputs=[],
+        scores=[],
+        report_path=root / "comparison.md",
+        decision_path=root / "model-decision.md",
+    )
+    text = (root / "comparison.md").read_text(encoding="utf-8")
+    assert "## Quality" in text
+    assert "Directional reading only." in text
+
+
+def test_filled_decision_is_not_overwritten(tmp_path: object) -> None:
+    root = Path(str(tmp_path))
+    decision = root / "model-decision.md"
+    filled = (
+        "# Model Decision Record\n\n"
+        "- selected model: qwen\n"
+        "- prompt version: extract.v3\n"
+    )
+    decision.write_text(filled, encoding="utf-8")
+    write_reports(
+        run_id="demo",
+        models=["mistral"],
+        usage=[],
+        outputs=[],
+        scores=[],
+        report_path=root / "comparison.md",
+        decision_path=decision,
+    )
+    assert decision.read_text(encoding="utf-8") == filled
